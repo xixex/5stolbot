@@ -1,8 +1,9 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
-import { recipes, weekPlan, shoppingGroups } from '~/data/menu.js'
+import { recipes, weekPlan, shoppingByWeek } from '~/data/menu.js'
 
 const activeTab = ref('menu')
+const selectedWeek = ref(0)
 const selectedDay = ref(0)
 const openedRecipe = ref(null)
 const search = ref('')
@@ -11,21 +12,23 @@ const favorites = ref([])
 const tgReady = ref(false)
 
 const days = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
-const dayNames = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
 const mealNames = ['Завтрак', 'Обед', 'Ужин']
-const currentPlan = computed(() => weekPlan[selectedDay.value])
-const currentRecipes = computed(() => currentPlan.value.meals.map(id => recipes.find(r => r.id === id)).filter(Boolean))
-const dayCalories = computed(() => currentRecipes.value.reduce((sum, r) => sum + (r.kcal || 0), 0))
-const allShoppingItems = computed(() => shoppingGroups.flatMap(group => group.items.map(item => ({ ...item, group: group.title }))))
+const currentWeek = computed(() => weekPlan[selectedWeek.value] || weekPlan[0])
+const currentPlan = computed(() => currentWeek.value.days[selectedDay.value] || currentWeek.value.days[0])
+const currentRecipes = computed(() => currentPlan.value.meals.map(id => recipes.find(recipe => recipe.id === id)).filter(Boolean))
+const dayCalories = computed(() => currentRecipes.value.reduce((sum, recipe) => sum + (recipe.kcal || 0), 0))
+const currentShopping = computed(() => shoppingByWeek[selectedWeek.value] || shoppingByWeek[0])
+const shoppingGroups = computed(() => currentShopping.value.groups)
+const allShoppingItems = computed(() => shoppingGroups.value.flatMap(group => group.items.map(item => ({ ...item, group: group.title }))))
 const filteredRecipes = computed(() => {
-  const q = search.value.trim().toLowerCase()
+  const query = search.value.trim().toLowerCase()
   return recipes.filter(recipe => {
-    const matchesSearch = !q || [recipe.title, ...recipe.ingredients.map(i => i.name)].join(' ').toLowerCase().includes(q)
+    const matchesSearch = !query || [recipe.title, ...recipe.ingredients.map(item => item.name)].join(' ').toLowerCase().includes(query)
     const matchesFavorite = activeTab.value !== 'favorites' || favorites.value.includes(recipe.id)
     return matchesSearch && matchesFavorite
   })
 })
-const checkedCount = computed(() => checkedItems.value.length)
+const checkedCount = computed(() => allShoppingItems.value.filter(item => checkedItems.value.includes(item.id)).length)
 
 onMounted(() => {
   try {
@@ -54,6 +57,10 @@ watch(favorites, value => {
   if (import.meta.client) localStorage.setItem('stol5-favorites', JSON.stringify(value))
 }, { deep: true })
 
+function selectWeek(index) {
+  selectedWeek.value = index
+  selectedDay.value = 0
+}
 function toggleShopping(id) {
   checkedItems.value = checkedItems.value.includes(id)
     ? checkedItems.value.filter(item => item !== id)
@@ -75,23 +82,26 @@ function goTo(tab) {
   openedRecipe.value = null
 }
 function shareRecipe(recipe) {
-  const text = `${recipe.title}\n\nИнгредиенты:\n${recipe.ingredients.map(i => `• ${i.name} — ${i.amount}`).join('\n')}\n\nПриготовление:\n${recipe.steps.map((s, i) => `${i + 1}. ${s}`).join('\n')}`
+  const text = `${recipe.title}\n\nИнгредиенты:\n${recipe.ingredients.map(item => `• ${item.name} — ${item.amount}`).join('\n')}\n\nПриготовление:\n${recipe.steps.map((step, index) => `${index + 1}. ${step}`).join('\n')}`
   const tg = window.Telegram?.WebApp
   if (tg?.showPopup) {
-    tg.showPopup({ title: recipe.title, message: 'Рецепт готов к отправке. Используй меню Telegram, чтобы скопировать или переслать текст.', buttons: [{ type: 'ok' }] })
+    tg.showPopup({ title: recipe.title, message: 'Текст рецепта скопирован, если Telegram разрешил доступ к буферу обмена.', buttons: [{ type: 'ok' }] })
     if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).catch(() => {})
   } else if (navigator.clipboard?.writeText) {
     navigator.clipboard.writeText(text).catch(() => {})
   }
 }
 function copyShopping() {
-  const text = shoppingGroups.map(group => `${group.title}\n${group.items.map(item => `- ${item.name} — ${item.amount}`).join('\n')}`).join('\n\n')
+  const text = `${currentShopping.value.title}\n\n` + shoppingGroups.value.map(group => `${group.title}\n${group.items.map(item => `- ${item.name} — ${item.amount}`).join('\n')}`).join('\n\n')
   if (navigator.clipboard?.writeText) {
     navigator.clipboard.writeText(text).then(() => {
-      const tg = window.Telegram?.WebApp
-      tg?.showAlert?.('Список покупок скопирован')
+      window.Telegram?.WebApp?.showAlert?.('Список покупок скопирован')
     }).catch(() => {})
   }
+}
+function resetShoppingChecks() {
+  const idsForWeek = allShoppingItems.value.map(item => item.id)
+  checkedItems.value = checkedItems.value.filter(id => !idsForWeek.includes(id))
 }
 </script>
 
@@ -102,7 +112,7 @@ function copyShopping() {
       <div class="brand-copy">
         <p class="eyebrow">ЛИЧНЫЙ КУЛИНАРНЫЙ ПОМОЩНИК</p>
         <h1>Моё меню</h1>
-        <p class="subheading">Стол № 5 · мультиварка</p>
+        <p class="subheading">Стол № 5 · мультиварка · 4 недели</p>
       </div>
       <span v-if="tgReady" class="telegram-pill">Telegram</span>
     </header>
@@ -110,11 +120,25 @@ function copyShopping() {
     <section v-if="activeTab === 'menu'" class="content">
       <div class="intro-card">
         <div>
-          <p class="eyebrow light">ПЛАН НА НЕДЕЛЮ</p>
+          <p class="eyebrow light">ПЛАН НА 4 НЕДЕЛИ</p>
           <h2>Что готовим?</h2>
-          <p>Выбери день и открой рецепт.</p>
+          <p>Выбери неделю, день и открой рецепт.</p>
         </div>
         <span class="intro-emoji" aria-hidden="true">🍲</span>
+      </div>
+
+      <div class="day-picker week-picker" role="tablist" aria-label="Недели">
+        <button
+          v-for="(week, index) in weekPlan"
+          :key="week.title"
+          class="day-button"
+          :class="{ active: selectedWeek === index }"
+          :aria-selected="selectedWeek === index"
+          role="tab"
+          @click="selectWeek(index)"
+        >
+          <span>{{ index + 1 }} нед.</span>
+        </button>
       </div>
 
       <div class="day-picker" role="tablist" aria-label="Дни недели">
@@ -134,8 +158,8 @@ function copyShopping() {
 
       <div class="section-heading">
         <div>
-          <p class="eyebrow">ТВОЙ ПЛАН</p>
-          <h2>{{ dayNames[selectedDay] }}</h2>
+          <p class="eyebrow">{{ currentWeek.title.toUpperCase() }}</p>
+          <h2>{{ currentPlan.day }}</h2>
         </div>
         <div class="calorie-chip">
           <strong>≈ {{ dayCalories }}</strong>
@@ -163,8 +187,7 @@ function copyShopping() {
           <button class="text-button" @click="openRecipe(recipe)">Рецепт →</button>
         </div>
       </article>
-
-      <p class="footnote">*Калорийность приблизительная и требует проверки по фактическим продуктам и порциям. Это пример меню, а не индивидуальное медицинское назначение.</p>
+      <p class="footnote">*Калорийность ориентировочная. В плане три основных приёма пищи; перекусы и напитки не включены. Это пример меню, а не индивидуальное медицинское назначение.</p>
     </section>
 
     <section v-else-if="activeTab === 'recipes' || activeTab === 'favorites'" class="content">
@@ -210,8 +233,24 @@ function copyShopping() {
         </div>
         <span class="count-chip">{{ checkedCount }}/{{ allShoppingItems.length }}</span>
       </div>
+
+      <div class="day-picker week-picker" role="tablist" aria-label="Неделя для покупок">
+        <button
+          v-for="(week, index) in shoppingByWeek"
+          :key="week.title"
+          class="day-button"
+          :class="{ active: selectedWeek === index }"
+          :aria-selected="selectedWeek === index"
+          role="tab"
+          @click="selectWeek(index)"
+        >
+          <span>{{ index + 1 }} нед.</span>
+        </button>
+      </div>
+      <p class="muted">{{ currentShopping.title }} · ориентировочно на одного человека</p>
       <div class="progress-track"><div class="progress-value" :style="{ width: `${allShoppingItems.length ? checkedCount / allShoppingItems.length * 100 : 0}%` }"></div></div>
       <p class="muted">Отмечай продукты по мере покупки. Отметки сохраняются на этом устройстве.</p>
+
       <section v-for="group in shoppingGroups" :key="group.title" class="shopping-group">
         <h3>{{ group.title }}</h3>
         <label v-for="item in group.items" :key="item.id" class="shopping-row" :class="{ checked: checkedItems.includes(item.id) }">
@@ -222,7 +261,7 @@ function copyShopping() {
         </label>
       </section>
       <button class="secondary-button full-button" @click="copyShopping">Скопировать список</button>
-      <button class="plain-button full-button" @click="checkedItems = []">Снять все отметки</button>
+      <button class="plain-button full-button" @click="resetShoppingChecks">Снять отметки этой недели</button>
     </section>
 
     <nav class="bottom-nav" aria-label="Главная навигация">
@@ -259,12 +298,9 @@ function copyShopping() {
               <p>{{ step }}</p>
             </div>
             <div class="note-card">
-              <strong>Обрати внимание</strong>
-              <p>Время зависит от модели мультиварки. Проверяй полную готовность мяса и рыбы. Калорийность ориентировочная.</p>
+              <strong>Важно для стола № 5</strong>
+              <p>Не обжаривай ингредиенты. Выбирай варку, тушение без предварительной обжарки или приготовление на пару. Индивидуальные ограничения уточняй у врача.</p>
             </div>
-            <button class="primary-button full-button" @click="toggleFavorite(openedRecipe.id)">
-              {{ favorites.includes(openedRecipe.id) ? '♥ В избранном' : '♡ Добавить в избранное' }}
-            </button>
             <button class="secondary-button full-button" @click="shareRecipe(openedRecipe)">Скопировать рецепт</button>
           </div>
         </section>
